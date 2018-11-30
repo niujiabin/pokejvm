@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.12)
-project(CLionWorkSpace C)
+project(pokejvm)
 
-set(CMAKE_C_STANDARD 99)
+set(CMAKE_CXX_STANDARD 14)
 
-add_executable(CLionWorkSpace main.c)
+add_executable(CLionWorkSpace main.cpp src/parse/ParentClass.cpp src/parse/ClassParse.cpp src/parse/ClassParse.hpp src/class/ClassFile.cpp)
