@@ -3,6 +3,8 @@
 #include<cstring>
 #include <cstdint>
 #include <netinet/in.h>
+#include <pthread.h>
+#include <stdio.h>
 
 using namespace std;
 
@@ -47,8 +49,9 @@ struct cp_info {
 
  * @return
  */
-int main() {
 
+
+int parseTestClass() {
     const char *classFileName = "/home/jiabinniu/CLionProjects/pokejvm/java/Test.class";
 
     ifstream inFile((classFileName), ios::binary);
@@ -114,4 +117,228 @@ int main() {
             }
         }
     }
+}
+
+#define NLOOP 5000;
+
+//互斥量
+static pthread_mutex_t counter_mutex = PTHREAD_MUTEX_INITIALIZER;
+static int counter;
+
+//假设定义一个java对象　实际的对象并不会占用这么多空间
+struct object {
+
+
+    /**
+      * Mark Word　 对象标记关键字
+      * 如哈希码（HashCode）、GC分代年龄、锁状态标志、线程持有的锁、偏向线程 ID、偏向时间戳等等,它是实现轻量级锁和偏向锁的关键.
+      * class oopDesc {
+          friend class VMStructs;
+         private:
+          volatile markOop  _mark;//markOop:Mark Word标记字段
+          union _metadata {
+            Klass*      _klass;//对象类型元数据的指针
+            narrowKlass _compressed_klass;
+          } _metadata;
+
+          // Fast access to barrier set.  Must be initialized.
+          static BarrierSet* _bs;
+
+         public:
+          markOop  mark() const         { return _mark; }
+          markOop* mark_addr() const    { return (markOop*) &_mark; }
+
+          void set_mark(volatile markOop m)      { _mark = m;   }
+
+          void    release_set_mark(markOop m);
+          markOop cas_set_mark(markOop new_mark, markOop old_mark);
+
+          // Used only to re-initialize the mark word (e.g., of promoted
+          // objects during a GC) -- requires a valid klass pointer
+          void init_mark();
+
+          Klass* klass() const;
+          Klass* klass_or_null() const volatile;
+          Klass** klass_addr();
+          narrowKlass* compressed_klass_addr();
+
+          　1 ObjectMonitor* monitor() const {
+            2     assert(has_monitor(), "check");
+            3     // Use xor instead of &~ to provide one extra tag-bit check.
+            4     return (ObjectMonitor*) (value() ^ monitor_value);
+            5   }
+        ....省略...
+        }
+      */
+
+    //存在于对象头部
+    int hashCode;
+
+    //存在于对象头部
+    int gc_generation;
+
+    //锁状态　存在于对象头部　01　表示无锁状态　00轻量级锁　10　重量级锁
+    int lock_status;
+
+    //指向Class的指针
+    //对象实例信息略
+};
+/**
+ * 监视器锁对象
+ */
+struct objectMonitor{
+
+/**
+ * ObjectMonitor() {
+    _header       = NULL;//markOop对象头
+    _count        = 0;
+    _waiters      = 0,//等待线程数
+    _recursions   = 0;//重入次数
+    _object       = NULL;//监视器锁寄生的对象。锁不是平白出现的，而是寄托存储于对象中。
+    _owner        = NULL;//指向获得ObjectMonitor对象的线程或基础锁
+    _WaitSet      = NULL;//处于wait状态的线程，会被加入到wait set；
+    _WaitSetLock  = 0 ;
+    _Responsible  = NULL ;
+    _succ         = NULL ;
+    _cxq          = NULL ;
+    FreeNext      = NULL ;
+    _EntryList    = NULL ;//处于等待锁block状态的线程，会被加入到entry set；
+    _SpinFreq     = 0 ;
+    _SpinClock    = 0 ;
+    OwnerIsThread = 0 ;// _owner is (Thread *) vs SP/BasicLock
+    _previous_owner_tid = 0;// 监视器前一个拥有者线程的ID
+  }
+
+
+ 多个线程在竞争共享数据执行到同步代码块时，会在_EntryList中排队，获得对象monitor的线程在进入_Owner区域时会将monitor的_owner设为当前线程，
+ 同时计数器_count加1。若持有monitor对象的线程调用了wait()方法会释放monitor，_owner为null，计数器_count减一，进入到_WaitSet集合中等待被唤醒。
+
+ //synchronize　基本原理
+ //jdk 1.6　之前　objectMonitor 的　enter 和　exit　直接和互斥量 mutex 映射　一旦发现同步代码块开始 就使用pthread_mutex_lock(object_monitor) 　退出执行unlock
+//非常好的文章　https://www.cnblogs.com/dennyzhangdd/p/6734638.html
+
+ //线程处于可偏向状态　且　是无所状态
+ if(object->mark().bias == BIAS && object->mark().lockstatus == NO_LOCK){
+
+        if(object->mark().thread == null){
+                if(CAS(object->mark().thread_id = self_thread_id)){
+                    return ;//执行同步代码块
+                }
+
+                //CAS失败　　说明有其它线程在竞争　　这时进行锁升级　偏向锁的升级必须等到全局安全点
+                if(SAFE_POINT){
+                //暂停偏向锁的线程（因为此时要锁升级了　先暂偏向锁中的线程）
+                if(object.mark().biasThread().status != LOCK_STATUS ){
+                          park(object.mark().biasThread());
+                          //升级成轻量级锁
+                          object.mark().lockstatus = LIGHT_LOCK;
+                          //升级完成继续执行　偏向锁的线程
+                          unpark(object.mark().biasThread());
+                    }
+                }
+        }
+        else if(object->mark().thread == self_thread){
+               return ;
+        }
+
+        //说明这次进来的线程和之前的线程不一样　　　偏向锁升级
+        if(SAFE_POINT){
+                //暂停偏向锁的线程（因为此时要锁升级了　先暂偏向锁中的线程）
+                if(object.mark().biasThread().status != LOCK_STATUS ){
+                          park(object.mark().biasThread());
+                          //升级成轻量级锁
+                          object.mark().lockstatus = LIGHT_LOCK;
+                          //升级完成继续执行　偏向锁的线程
+                          unpark(object.mark().biasThread());
+                    }
+       }
+
+ }
+
+//不满足无锁　和　偏向锁标志位　　进入到轻量级锁中
+slow_enter()　具体实现：
+
+
+
+
+
+ else{
+
+  monitor = object.createMonitorObject();
+
+ if(mointor.owner == null){
+     monitor.owner = self_thread;
+     monitor.recursions = 1;
+ }
+ else{
+    for(;;){
+        if(monitor.owner == self_thread){
+            monitor.recursions ++;
+        }
+        else{
+
+            for(sometime){
+                waiter = new ObjectWaiter(self_thread);
+                node.entryList.addWaiter(waiter);
+                addWaiterInto_cxq;
+                self_thread.park;
+            }
+            //
+        }
+    }
+    monitor.entryList.add(current)
+ }
+ }
+
+
+
+ */
+
+};
+void *doit(void *);
+
+/**
+ * 线程相关学习
+ */
+
+int pthreadTest() {
+
+    pthread_t tidA, tidB;
+
+    pthread_create(&tidA, NULL, doit, NULL);
+    pthread_create(&tidB, NULL, doit, NULL);
+
+    pthread_join(tidA, NULL);
+    pthread_join(tidB, NULL);
+
+    return 0;
+
+}
+
+void *doit(void *arg) {
+    int i, val;
+    for (i = 0; i < 5000; i++) {
+        /**
+         * 互斥锁之间的代码　只有一个线程可以执行
+         * 在java中  synchronize块起到了互斥锁的作用，同一时刻只有一个代码访问共享代码块
+         * 而java　中的互斥量　可以是任意一个对象，为什么可以是任意一个对象
+         * 需要将当前线程挂起，从用户态切换到内核态，这种切换代价是机器昂贵的
+         *
+         * 　java 在这里引入了锁的优化
+         */
+        pthread_mutex_lock(&counter_mutex);
+        val = counter;
+        //根据输出结果可以看出　多线程并发　大多时候都是连续同一个线程访问同步块，但是同一个；其次单线程环境下不涉及并发问题，每次都加锁代价也是机器昂贵的
+        printf("%x: %d\n", (unsigned int) pthread_self(), val + 1);
+        counter = val + 1;
+        //互斥锁　解锁
+        pthread_mutex_unlock(&counter_mutex);
+    }
+    return NULL;
+}
+
+int main() {
+    //pthreadTest();
+    //jvm　解析字节码文件　测试
+    //parseTestClass();
 }
